@@ -64,38 +64,112 @@ export default function ItemWebBuilder() {
 
   const svgRef = useRef(null);
   const simulationRef = useRef(null);
+  const nodesRef = useRef([]);
+  const dimensionsRef = useRef({ width: 800, height: 600 });
 
-  // Save data whenever it changes
+  // Save data whenever it changes (debounced to avoid excessive saves during simulation)
+  const saveTimeoutRef = useRef(null);
   useEffect(() => {
-    saveData(data);
+    if (saveTimeoutRef.current) {
+      clearTimeout(saveTimeoutRef.current);
+    }
+    saveTimeoutRef.current = setTimeout(() => {
+      saveData(data);
+    }, 500);
+    return () => {
+      if (saveTimeoutRef.current) {
+        clearTimeout(saveTimeoutRef.current);
+      }
+    };
   }, [data]);
+
+  // Calculate category centers based on current dimensions
+  const getCategoryCenters = useCallback((width, height, categories) => {
+    const categoryCount = categories.length || 1;
+    const centers = {};
+    categories.forEach((cat, i) => {
+      const angle = (i / categoryCount) * 2 * Math.PI - Math.PI / 2;
+      const radius = Math.min(width, height) * 0.25;
+      centers[cat.id] = {
+        x: width / 2 + Math.cos(angle) * radius,
+        y: height / 2 + Math.sin(angle) * radius,
+      };
+    });
+    return centers;
+  }, []);
+
+  // Initialize zoom behavior (only once)
+  useEffect(() => {
+    if (!svgRef.current) return;
+
+    const svg = d3.select(svgRef.current);
+    const zoom = d3
+      .zoom()
+      .scaleExtent([0.2, 3])
+      .filter((event) => {
+        // Allow scroll/wheel zoom always
+        if (event.type === 'wheel') return true;
+
+        // Block zoom behavior on double-click (let React handle it)
+        if (event.type === 'dblclick') return false;
+
+        // Block zoom on shift+mousedown (for connecting nodes)
+        if (event.type === 'mousedown' && event.shiftKey) return false;
+
+        // Block pan/drag if mousedown is on a node element
+        if (event.type === 'mousedown') {
+          const target = event.target;
+          // Check if the click target is inside a node group (has data-node-id)
+          const nodeGroup = target.closest('[data-node-id]');
+          if (nodeGroup) {
+            return false; // This is a node, don't let zoom handle it
+          }
+        }
+
+        return true;
+      })
+      .on("zoom", (event) => {
+        setTransform({
+          x: event.transform.x,
+          y: event.transform.y,
+          k: event.transform.k,
+        });
+      });
+
+    svg.call(zoom);
+
+    // Disable D3's default double-click zoom
+    svg.on("dblclick.zoom", null);
+  }, []);
 
   // Initialize and update D3 simulation
   useEffect(() => {
     if (!svgRef.current) return;
 
-    const svg = d3.select(svgRef.current);
-    const width = svgRef.current.clientWidth;
-    const height = svgRef.current.clientHeight;
+    // Get dimensions with fallback
+    const width = svgRef.current.clientWidth || 800;
+    const height = svgRef.current.clientHeight || 600;
+    dimensionsRef.current = { width, height };
 
-    // Category centers for clustering
-    const categoryCount = data.categories.length;
-    const categoryCenters = {};
-    data.categories.forEach((cat, i) => {
-      const angle = (i / categoryCount) * 2 * Math.PI - Math.PI / 2;
-      const radius = Math.min(width, height) * 0.25;
-      categoryCenters[cat.id] = {
-        x: width / 2 + Math.cos(angle) * radius,
-        y: height / 2 + Math.sin(angle) * radius,
+    const categoryCenters = getCategoryCenters(width, height, data.categories);
+
+    // Create or update nodes
+    const existingNodesMap = new Map(nodesRef.current.map(n => [n.id, n]));
+    const nodes = data.items.map((item) => {
+      const existing = existingNodesMap.get(item.id);
+      if (existing) {
+        // Keep existing position, update other properties
+        return { ...existing, ...item, x: existing.x, y: existing.y };
+      }
+      // New node - place at category center
+      const center = categoryCenters[item.category];
+      return {
+        ...item,
+        x: item.x ?? center?.x ?? width / 2,
+        y: item.y ?? center?.y ?? height / 2,
       };
     });
-
-    // Create nodes with positions
-    const nodes = data.items.map((item) => ({
-      ...item,
-      x: item.x ?? categoryCenters[item.category]?.x ?? width / 2,
-      y: item.y ?? categoryCenters[item.category]?.y ?? height / 2,
-    }));
+    nodesRef.current = nodes;
 
     // Create links
     const links = data.connections.map((conn) => ({
@@ -128,13 +202,22 @@ export default function ItemWebBuilder() {
 
     simulationRef.current = simulation;
 
+    // Throttle state updates to reduce re-renders
+    let lastUpdate = 0;
+    const updateInterval = 50; // Update state at most every 50ms
+
     simulation.on("tick", () => {
-      // Update item positions in state periodically
+      const now = Date.now();
+      if (now - lastUpdate < updateInterval) return;
+      lastUpdate = now;
+
+      // Update item positions in state using nodesRef for latest positions
       setData((prev) => {
+        const currentNodes = nodesRef.current;
         const updated = { ...prev };
         updated.items = prev.items.map((item) => {
-          const node = nodes.find((n) => n.id === item.id);
-          if (node) {
+          const node = currentNodes.find((n) => n.id === item.id);
+          if (node && (node.x !== item.x || node.y !== item.y)) {
             return { ...item, x: node.x, y: node.y };
           }
           return item;
@@ -143,42 +226,51 @@ export default function ItemWebBuilder() {
       });
     });
 
-    // Zoom behavior
-    const zoom = d3
-      .zoom()
-      .scaleExtent([0.2, 3])
-      .on("zoom", (event) => {
-        setTransform({
-          x: event.transform.x,
-          y: event.transform.y,
-          k: event.transform.k,
-        });
-      });
-
-    svg.call(zoom);
+    // Restart simulation with higher alpha for new items
+    simulation.alpha(1).restart();
 
     return () => {
       simulation.stop();
     };
-  }, [data.items.length, data.connections.length, data.categories]);
+  }, [data.items.length, data.connections.length, data.categories, getCategoryCenters]);
 
   // Handle node drag
   const handleNodeDrag = useCallback((itemId, dx, dy) => {
+    // Scale the delta by the current zoom level
+    const scaledDx = dx / transform.k;
+    const scaledDy = dy / transform.k;
+
+    // Update the simulation node directly
+    if (simulationRef.current) {
+      const simNode = simulationRef.current.nodes().find((n) => n.id === itemId);
+      if (simNode) {
+        // Update position and fix it in place during drag
+        simNode.x = (simNode.x ?? 0) + scaledDx;
+        simNode.y = (simNode.y ?? 0) + scaledDy;
+        simNode.fx = simNode.x;
+        simNode.fy = simNode.y;
+      }
+    }
+
+    // Also update nodesRef to keep it in sync
+    const nodeInRef = nodesRef.current.find((n) => n.id === itemId);
+    if (nodeInRef) {
+      nodeInRef.x = (nodeInRef.x ?? 0) + scaledDx;
+      nodeInRef.y = (nodeInRef.y ?? 0) + scaledDy;
+    }
+
+    // Update React state
     setData((prev) => ({
       ...prev,
       items: prev.items.map((item) =>
         item.id === itemId
-          ? { ...item, x: (item.x || 0) + dx / transform.k, y: (item.y || 0) + dy / transform.k }
+          ? { ...item, x: (item.x ?? 0) + scaledDx, y: (item.y ?? 0) + scaledDy }
           : item
       ),
     }));
-    
+
+    // Gently restart simulation to update links
     if (simulationRef.current) {
-      const node = simulationRef.current.nodes().find((n) => n.id === itemId);
-      if (node) {
-        node.fx = node.x;
-        node.fy = node.y;
-      }
       simulationRef.current.alpha(0.1).restart();
     }
   }, [transform.k]);
@@ -187,20 +279,31 @@ export default function ItemWebBuilder() {
     if (simulationRef.current) {
       const node = simulationRef.current.nodes().find((n) => n.id === itemId);
       if (node) {
+        // Release the fixed position so simulation can take over
         node.fx = null;
         node.fy = null;
       }
+      // Small restart to let simulation settle
+      simulationRef.current.alpha(0.05).restart();
     }
   }, []);
 
   // Add new item
   const addItem = (name, category) => {
+    // Calculate initial position based on category center
+    const { width, height } = dimensionsRef.current;
+    const categoryCenters = getCategoryCenters(width, height, data.categories);
+    const center = categoryCenters[category];
+
+    // Add small random offset to prevent stacking
+    const offset = () => (Math.random() - 0.5) * 60;
+
     const newItem = {
       id: generateId(),
       name,
       category,
-      x: undefined,
-      y: undefined,
+      x: (center?.x ?? width / 2) + offset(),
+      y: (center?.y ?? height / 2) + offset(),
     };
     setData((prev) => ({
       ...prev,
@@ -899,7 +1002,10 @@ export default function ItemWebBuilder() {
             }
           }}
           onDoubleClick={(e) => {
-            if (e.target === svgRef.current) {
+            // Open modal if clicking on SVG background (not on nodes or connections)
+            const targetTag = e.target.tagName.toLowerCase();
+            const isBackground = targetTag === 'svg' || targetTag === 'rect' && e.target.dataset.background === 'true';
+            if (isBackground) {
               setShowNewItemModal(true);
             }
           }}
@@ -915,13 +1021,22 @@ export default function ItemWebBuilder() {
           </defs>
 
           <g transform={`translate(${transform.x}, ${transform.y}) scale(${transform.k})`}>
+            {/* Invisible background rect to capture mouse events */}
+            <rect
+              x={-10000}
+              y={-10000}
+              width={20000}
+              height={20000}
+              fill="transparent"
+              data-background="true"
+            />
             {/* Category zones (subtle background) */}
             {data.categories.map((cat, i) => {
               const catItems = data.items.filter((item) => item.category === cat.id);
               if (catItems.length === 0) return null;
 
-              const avgX = catItems.reduce((sum, item) => sum + (item.x || 0), 0) / catItems.length;
-              const avgY = catItems.reduce((sum, item) => sum + (item.y || 0), 0) / catItems.length;
+              const avgX = catItems.reduce((sum, item) => sum + (item.x ?? 0), 0) / catItems.length;
+              const avgY = catItems.reduce((sum, item) => sum + (item.y ?? 0), 0) / catItems.length;
 
               return (
                 <g key={cat.id}>
@@ -957,10 +1072,10 @@ export default function ItemWebBuilder() {
 
               const relType = getRelType(conn.relationshipType);
               const { linePath, arrowPath, reverseArrowPath } = getArrowPath(
-                source.x || 0,
-                source.y || 0,
-                target.x || 0,
-                target.y || 0,
+                source.x ?? 0,
+                source.y ?? 0,
+                target.x ?? 0,
+                target.y ?? 0,
                 conn.bidirectional
               );
 
@@ -1007,8 +1122,8 @@ export default function ItemWebBuilder() {
             {/* Connecting line preview */}
             {connectingFrom && (
               <line
-                x1={connectingFrom.x || 0}
-                y1={connectingFrom.y || 0}
+                x1={connectingFrom.x ?? 0}
+                y1={connectingFrom.y ?? 0}
                 x2={mousePos.x}
                 y2={mousePos.y}
                 stroke="#60a5fa"
@@ -1027,7 +1142,8 @@ export default function ItemWebBuilder() {
               return (
                 <g
                   key={item.id}
-                  transform={`translate(${item.x || 0}, ${item.y || 0})`}
+                  data-node-id={item.id}
+                  transform={`translate(${item.x ?? 0}, ${item.y ?? 0})`}
                   style={{ cursor: connectingFrom && !isConnecting ? "crosshair" : "grab" }}
                   onClick={(e) => {
                     e.stopPropagation();
@@ -1042,16 +1158,20 @@ export default function ItemWebBuilder() {
                   onMouseDown={(e) => {
                     if (e.shiftKey) {
                       e.stopPropagation();
+                      e.preventDefault();
                       setConnectingFrom(item);
-                      setMousePos({ x: item.x || 0, y: item.y || 0 });
+                      setMousePos({ x: item.x ?? 0, y: item.y ?? 0 });
                     } else if (!connectingFrom) {
                       e.stopPropagation();
-                      const startX = e.clientX;
-                      const startY = e.clientY;
+                      e.preventDefault();
+                      let lastX = e.clientX;
+                      let lastY = e.clientY;
 
                       const handleMove = (moveEvent) => {
-                        const dx = moveEvent.clientX - startX;
-                        const dy = moveEvent.clientY - startY;
+                        const dx = moveEvent.clientX - lastX;
+                        const dy = moveEvent.clientY - lastY;
+                        lastX = moveEvent.clientX;
+                        lastY = moveEvent.clientY;
                         handleNodeDrag(item.id, dx, dy);
                       };
 
