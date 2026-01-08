@@ -1,5 +1,5 @@
 {
-  "name": "item-web-builder",
+  "name": "relations",
   "version": "1.0.0",
   "description": "A lightweight dev tool for visually mapping project architecture as an interactive node graph",
   "type": "module",

@@ -16,7 +16,7 @@ const DEFAULT_RELATIONSHIP_TYPES = [
 ];
 
 // Storage keys
-const STORAGE_KEY = "item-web-builder-data";
+const STORAGE_KEY = "relations-data";
 
 function loadData() {
   try {
@@ -289,7 +289,7 @@ export default function ItemWebBuilder() {
   }, []);
 
   // Add new item
-  const addItem = (name, category) => {
+  const addItem = (name, category, notes = "") => {
     // Calculate initial position based on category center
     const { width, height } = dimensionsRef.current;
     const categoryCenters = getCategoryCenters(width, height, data.categories);
@@ -302,6 +302,7 @@ export default function ItemWebBuilder() {
       id: generateId(),
       name,
       category,
+      notes,
       x: (center?.x ?? width / 2) + offset(),
       y: (center?.y ?? height / 2) + offset(),
     };
@@ -440,7 +441,7 @@ export default function ItemWebBuilder() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = "item-web-data.json";
+    a.download = "relations-data.json";
     a.click();
     URL.revokeObjectURL(url);
   };
@@ -556,7 +557,7 @@ export default function ItemWebBuilder() {
               letterSpacing: "0.5px",
             }}
           >
-            Item Web Builder
+            Relations
           </h1>
           <p style={{ margin: "8px 0 0", fontSize: "11px", color: "#64748b" }}>
             Map your project architecture
@@ -1345,6 +1346,39 @@ export default function ItemWebBuilder() {
                 </select>
               </div>
 
+              <div>
+                <label style={{ fontSize: "11px", color: "#64748b", display: "block", marginBottom: "6px" }}>
+                  Notes
+                </label>
+                <textarea
+                  value={selectedItem.notes || ""}
+                  onChange={(e) => {
+                    const newNotes = e.target.value;
+                    setData((prev) => ({
+                      ...prev,
+                      items: prev.items.map((i) =>
+                        i.id === selectedItem.id ? { ...i, notes: newNotes } : i
+                      ),
+                    }));
+                    setSelectedItem((prev) => ({ ...prev, notes: newNotes }));
+                  }}
+                  placeholder="Add notes about this item..."
+                  style={{
+                    width: "100%",
+                    padding: "10px",
+                    background: "rgba(0, 0, 0, 0.3)",
+                    border: "1px solid rgba(148, 163, 184, 0.2)",
+                    borderRadius: "6px",
+                    color: "#e2e8f0",
+                    fontSize: "13px",
+                    fontFamily: "inherit",
+                    boxSizing: "border-box",
+                    minHeight: "80px",
+                    resize: "vertical",
+                  }}
+                />
+              </div>
+
               <div style={{ marginTop: "8px" }}>
                 <h4 style={{ fontSize: "11px", color: "#64748b", margin: "0 0 8px" }}>Connections</h4>
                 {data.connections.filter(
@@ -1571,7 +1605,7 @@ export default function ItemWebBuilder() {
             <h2 style={{ margin: "0 0 20px", fontSize: "18px", fontWeight: 600 }}>New Item</h2>
             <NewItemForm
               categories={data.categories}
-              onSubmit={(name, category) => addItem(name, category)}
+              onSubmit={(name, category, notes) => addItem(name, category, notes)}
               onCancel={() => setShowNewItemModal(false)}
             />
           </div>
@@ -1633,6 +1667,7 @@ export default function ItemWebBuilder() {
 function NewItemForm({ categories, onSubmit, onCancel }) {
   const [name, setName] = useState("");
   const [category, setCategory] = useState(categories[0]?.id || "");
+  const [notes, setNotes] = useState("");
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
@@ -1654,11 +1689,6 @@ function NewItemForm({ categories, onSubmit, onCancel }) {
             fontSize: "14px",
             fontFamily: "inherit",
             boxSizing: "border-box",
-          }}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && name.trim()) {
-              onSubmit(name.trim(), category);
-            }
           }}
         />
       </div>
@@ -1687,6 +1717,28 @@ function NewItemForm({ categories, onSubmit, onCancel }) {
         </select>
       </div>
 
+      <div>
+        <label style={{ fontSize: "11px", color: "#64748b", display: "block", marginBottom: "6px" }}>Notes (optional)</label>
+        <textarea
+          value={notes}
+          onChange={(e) => setNotes(e.target.value)}
+          placeholder="Add notes about this item..."
+          style={{
+            width: "100%",
+            padding: "12px",
+            background: "rgba(0, 0, 0, 0.3)",
+            border: "1px solid rgba(148, 163, 184, 0.2)",
+            borderRadius: "8px",
+            color: "#e2e8f0",
+            fontSize: "14px",
+            fontFamily: "inherit",
+            boxSizing: "border-box",
+            minHeight: "80px",
+            resize: "vertical",
+          }}
+        />
+      </div>
+
       <div style={{ display: "flex", gap: "12px", marginTop: "8px" }}>
         <button
           onClick={onCancel}
@@ -1705,7 +1757,7 @@ function NewItemForm({ categories, onSubmit, onCancel }) {
           Cancel
         </button>
         <button
-          onClick={() => name.trim() && onSubmit(name.trim(), category)}
+          onClick={() => name.trim() && onSubmit(name.trim(), category, notes)}
           disabled={!name.trim()}
           style={{
             flex: 1,
